@@ -14,15 +14,21 @@
   yq,
 }:
 
-lib.extendMkDerivation {
-  constructDrv = stdenv.mkDerivation;
-
-  excludeDrvArgNames = [
+let
+  # Arguments consumed by buildDartApplication itself; they are excluded
+  # from the arguments forwarded to mkDerivation.
+  removedDrvArgNames = [
     "gitHashes"
     "sdkSourceBuilders"
     "pubspecLock"
+    "pubspecLockPackageFilter"
     "customSourceBuilders"
   ];
+in
+lib.extendMkDerivation {
+  constructDrv = stdenv.mkDerivation;
+
+  excludeDrvArgNames = removedDrvArgNames;
 
   extendDrvArgs =
     finalAttrs:
@@ -33,6 +39,7 @@ lib.extendMkDerivation {
       gitHashes ? { },
       sdkSourceBuilders ? { },
       customSourceBuilders ? { },
+      pubspecLockPackageFilter ? _name: _details: true,
 
       sdkSetupScript ? "",
       extraPackageConfigSetup ? "",
@@ -90,6 +97,7 @@ lib.extendMkDerivation {
           pubspecLock
           gitHashes
           customSourceBuilders
+          pubspecLockPackageFilter
           ;
         sdkSourceBuilders = {
           # https://github.com/dart-lang/pub/blob/e1fbda73d1ac597474b82882ee0bf6ecea5df108/lib/src/sdk/dart.dart#L80
@@ -143,12 +151,7 @@ lib.extendMkDerivation {
       !(builtins.isString dartOutputType && dartOutputType != "")
       -> throw "dartOutputType must be a non-empty string";
 
-    (builtins.removeAttrs args [
-      "gitHashes"
-      "sdkSourceBuilders"
-      "pubspecLock"
-      "customSourceBuilders"
-    ])
+    (builtins.removeAttrs args removedDrvArgNames)
     // {
       inherit
         pubspecLockFile

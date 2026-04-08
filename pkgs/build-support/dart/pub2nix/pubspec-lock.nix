@@ -32,10 +32,28 @@
   #
   # The passthru of the source derivation should be propagated.
   customSourceBuilders ? { },
+
+  # Optional predicate (name: details: bool) applied to pubspecLock.packages
+  # before any derivations are built. Packages for which the predicate returns
+  # false are silently dropped.
+  #
+  # This is useful when building a single member of a Dart workspace: the
+  # shared pubspec.lock contains packages from *all* workspace members (e.g.
+  # Flutter-only packages), but only a subset is needed for the member under
+  # build. Filtering them here avoids "No SDK source builder has been given
+  # for flutter!" errors without requiring a hand-trimmed lock file.
+  #
+  # Example – keep only Dart-SDK and hosted packages:
+  #
+  #   pubspecLockPackageFilter = name: details:
+  #     details.source != "sdk" || details.description == "dart";
+  pubspecLockPackageFilter ? _name: _details: true,
 }:
 
 let
-  dependencyVersions = builtins.mapAttrs (name: details: details.version) pubspecLock.packages;
+  filteredPackages = lib.filterAttrs pubspecLockPackageFilter pubspecLock.packages;
+
+  dependencyVersions = builtins.mapAttrs (name: details: details.version) filteredPackages;
 
   dependencyTypes = {
     "direct main" = "main";
@@ -52,7 +70,7 @@ let
         dependencies.${dependencyTypes.${details.dependency}}
         ++ [ name ];
     }
-  ) (lib.genAttrs (builtins.attrValues dependencyTypes) (dependencyType: [ ])) pubspecLock.packages;
+  ) (lib.genAttrs (builtins.attrValues dependencyTypes) (dependencyType: [ ])) filteredPackages;
 
   # fetchTarball fails with "tarball contains an unexpected number of top-level files". This is a workaround.
   # https://discourse.nixos.org/t/fetchtarball-with-multiple-top-level-directories-fails/20556
@@ -158,7 +176,7 @@ let
             details
         );
       }
-    ) pubspecLock.packages
+    ) filteredPackages
   );
 in
 {
