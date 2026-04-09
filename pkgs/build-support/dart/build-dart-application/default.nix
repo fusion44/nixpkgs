@@ -23,6 +23,7 @@ let
     "pubspecLock"
     "pubspecLockPackageFilter"
     "customSourceBuilders"
+    "workspaceMembers"
   ];
 in
 lib.extendMkDerivation {
@@ -40,6 +41,7 @@ lib.extendMkDerivation {
       sdkSourceBuilders ? { },
       customSourceBuilders ? { },
       pubspecLockPackageFilter ? _name: _details: true,
+      workspaceMembers ? null,
 
       sdkSetupScript ? "",
       extraPackageConfigSetup ? "",
@@ -204,7 +206,16 @@ lib.extendMkDerivation {
       # runs instead of the expected program. Don't strip if it's an exe output.
       dontStrip = args.dontStrip or (dartOutputType == "exe");
 
-      passAsFile = [ "pubspecLockFile" ];
+      # The workspace member list travels to dart-config-hook.sh as a file
+      # via passAsFile ($workspaceMembersJsonPath) so the setup hooks stay
+      # constant store paths shared across packages.
+      workspaceMembersJson =
+        if workspaceMembers == null then null else builtins.toJSON workspaceMembers;
+
+      passAsFile = [
+        "pubspecLockFile"
+      ]
+      ++ lib.optional (workspaceMembers != null) "workspaceMembersJson";
 
       passthru = {
         pubspecLock = pubspecLockData;
