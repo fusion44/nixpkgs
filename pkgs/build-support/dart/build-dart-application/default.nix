@@ -24,6 +24,10 @@ let
     "pubspecLockPackageFilter"
     "customSourceBuilders"
     "workspaceMembers"
+    "workspaceMember"
+    "workspaceDependencyGraph"
+    "workspaceDependencyClosure"
+    "workspaceIncludeDevDependencies"
   ];
 in
 lib.extendMkDerivation {
@@ -42,6 +46,10 @@ lib.extendMkDerivation {
       customSourceBuilders ? { },
       pubspecLockPackageFilter ? _name: _details: true,
       workspaceMembers ? null,
+      workspaceMember ? null,
+      workspaceDependencyGraph ? null,
+      workspaceDependencyClosure ? null,
+      workspaceIncludeDevDependencies ? true,
 
       sdkSetupScript ? "",
       extraPackageConfigSetup ? "",
@@ -89,9 +97,85 @@ lib.extendMkDerivation {
       ...
     }:
     let
+      workspaceDependencyClosure' =
+        if workspaceDependencyClosure != null then
+          workspaceDependencyClosure
+        else if workspaceMember != null then
+          let
+            # The check lives on the demanded path: an unused binding with an
+            # assert would never be forced under lazy evaluation.
+            _graph =
+              if workspaceDependencyGraph == null then
+                throw "workspaceDependencyGraph is required when workspaceMember is set"
+              else
+                workspaceDependencyGraph;
+            _roots = _graph.roots or { };
+            _packages = _graph.packages or { };
+            _root =
+              _roots.${workspaceMember}
+                or (throw "workspace member '${workspaceMember}' is missing from workspaceDependencyGraph.roots");
+            _start =
+              [ workspaceMember ]
+              ++ (_root.main or [ ])
+              ++ lib.optionals workspaceIncludeDevDependencies (_root.dev or [ ]);
+          in
+          map (item: item.key) (
+            builtins.genericClosure {
+              startSet = map (name: { key = name; }) _start;
+              operator = item: map (name: { key = name; }) (_packages.${item.key} or [ ]);
+            }
+          )
+        else
+          null;
+
+      workspaceDependencyClosureSet =
+        if workspaceDependencyClosure' == null then
+          null
+        else
+          lib.genAttrs workspaceDependencyClosure' (_: true);
+
+      memberPackageFilter =
+        if workspaceDependencyClosureSet == null then
+          _name: _details: true
+        else
+          name: _details: builtins.hasAttr name workspaceDependencyClosureSet;
+
+      # Both filters always compose: the closure (explicit or derived)
+      # narrows the lock to one member's dependencies, and
+      # pubspecLockPackageFilter additionally drops packages that cannot be
+      # built (e.g. Flutter SDK entries).  An explicit
+      # workspaceDependencyClosure replaces only the graph traversal, not
+      # the user filter.
+      effectivePubspecLockPackageFilter =
+        name: details:
+        (memberPackageFilter name details)
+        && (pubspecLockPackageFilter name details);
+
+      # Workspace members whose sources are injected into
+      # package_config.json.  Explicit workspaceMembers wins; otherwise,
+      # when a dependency graph is available, the members reachable from
+      # workspaceMember are derived from it (graph roots ∩ closure); with
+      # neither, all members from pubspec.yaml are injected at build time.
+      workspaceMembers' =
+        if workspaceMembers != null then
+          workspaceMembers
+        else if workspaceMember != null && workspaceDependencyGraph != null then
+          builtins.filter (
+            name: builtins.hasAttr name (workspaceDependencyGraph.roots or { })
+          ) workspaceDependencyClosure'
+        else
+          null;
+
       generators = callPackage ./generators.nix { inherit dart; } { buildDrvArgs = args; };
 
-      pubspecLockFile = builtins.toJSON pubspecLock;
+      # Serialize the filtered view so pubspec.lock and package_config.json
+      # in the build environment always cover the same package set.
+      pubspecLockFile = builtins.toJSON (
+        pubspecLock
+        // {
+          packages = lib.filterAttrs effectivePubspecLockPackageFilter (pubspecLock.packages or { });
+        }
+      );
       pubspecLockData = pub2nix.readPubspecLock {
         inherit
           src
@@ -99,8 +183,8 @@ lib.extendMkDerivation {
           pubspecLock
           gitHashes
           customSourceBuilders
-          pubspecLockPackageFilter
           ;
+        pubspecLockPackageFilter = effectivePubspecLockPackageFilter;
         sdkSourceBuilders = {
           # https://github.com/dart-lang/pub/blob/e1fbda73d1ac597474b82882ee0bf6ecea5df108/lib/src/sdk/dart.dart#L80
           "dart" =
@@ -210,12 +294,12 @@ lib.extendMkDerivation {
       # via passAsFile ($workspaceMembersJsonPath) so the setup hooks stay
       # constant store paths shared across packages.
       workspaceMembersJson =
-        if workspaceMembers == null then null else builtins.toJSON workspaceMembers;
+        if workspaceMembers' == null then null else builtins.toJSON workspaceMembers';
 
       passAsFile = [
         "pubspecLockFile"
       ]
-      ++ lib.optional (workspaceMembers != null) "workspaceMembersJson";
+      ++ lib.optional (workspaceMembers' != null) "workspaceMembersJson";
 
       passthru = {
         pubspecLock = pubspecLockData;
